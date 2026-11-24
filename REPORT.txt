@@ -1,0 +1,77 @@
+Отчёт о проверках
+
+Docker 29.1.3, Compose 2.40.3. Вывод настоящий, у команд Compose опущены строки прогресса.
+
+
+Уровень 4: один контейнер
+
+$ docker build -t hw3-counter .
+$ docker run -d --name hw3-single -p 8080:8000 -e GREETING=Привет hw3-counter
+701adbc2f45ee84c3d05b89c94a6141ae8396798f2b970f14ceb7401ae9473f4
+$ curl -sS -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/
+{"greeting": "Привет", "count": 0, "hostname": "701adbc2f45e", "storage": "sqlite"} -> HTTP 200
+$ for i in 1 2 3; do curl -sS -X POST -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/increment; done
+{"greeting": "Привет", "count": 1, "hostname": "701adbc2f45e", "storage": "sqlite"} -> HTTP 200
+{"greeting": "Привет", "count": 2, "hostname": "701adbc2f45e", "storage": "sqlite"} -> HTTP 200
+{"greeting": "Привет", "count": 3, "hostname": "701adbc2f45e", "storage": "sqlite"} -> HTTP 200
+$ docker logs hw3-single
+2026-11-24 16:36:38,898 listening port=8000 storage=sqlite
+2026-11-24 16:36:40,772 http 172.17.0.1 "GET / HTTP/1.1" 200 -
+2026-11-24 16:36:40,797 http 172.17.0.1 "POST /increment HTTP/1.1" 200 -
+2026-11-24 16:36:40,814 http 172.17.0.1 "POST /increment HTTP/1.1" 200 -
+2026-11-24 16:36:40,831 http 172.17.0.1 "POST /increment HTTP/1.1" 200 -
+
+
+Уровень 6: Compose и данные
+
+Порт и приветствие из .env, счётчик в именованном volume.
+
+$ cp .env.example .env
+$ docker compose -f compose.level6.yaml up -d --build
+$ for i in 1 2 3; do curl -sS -X POST -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/increment; done | tail -1
+{"greeting": "Hi", "count": 3, "hostname": "352f0388c748", "storage": "sqlite"} -> HTTP 200
+$ docker compose -f compose.level6.yaml rm -sf app
+$ docker compose -f compose.level6.yaml up -d
+$ curl -sS -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/
+{"greeting": "Hi", "count": 3, "hostname": "681af0d51aaa", "storage": "sqlite"} -> HTTP 200
+
+Контейнер новый (другой hostname), счётчик тот же: 3.
+
+
+Уровень 8: отдельное хранилище
+
+$ docker compose up -d --build --wait
+$ docker compose ps
+NAME          IMAGE              COMMAND                  SERVICE   CREATED          STATUS                    PORTS
+hww-app-1     hww-app            "python app.py"          app       12 seconds ago   Up 5 seconds (healthy)    0.0.0.0:8080->8000/tcp, [::]:8080->8000/tcp
+hww-redis-1   redis:7.4-alpine   "docker-entrypoint.s…"   redis     12 seconds ago   Up 11 seconds (healthy)   6379/tcp
+
+Оба сервиса healthy, на компьютере опубликован только порт приложения.
+
+Данные переживают down и up, N = 5:
+
+$ for i in 1 2 3 4 5; do curl -sS -X POST -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/increment; done | tail -1
+{"greeting": "Hi", "count": 5, "hostname": "5d5d8c2108e1", "storage": "redis"} -> HTTP 200
+$ docker compose down
+$ docker compose up -d --wait
+$ curl -sS -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/
+{"greeting": "Hi", "count": 5, "hostname": "02188082260e", "storage": "redis"} -> HTTP 200
+
+Redis остановлен:
+
+$ docker compose stop redis
+$ for p in healthz readyz; do curl -sS -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/$p; done
+{"status": "alive"} -> HTTP 200
+{"error": "storage_unavailable"} -> HTTP 503
+$ curl -sS -X POST -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/increment
+{"error": "storage_unavailable"} -> HTTP 503
+
+Redis снова запущен, приложение не перезапускалось (hostname тот же):
+
+$ docker compose start redis
+$ until curl -fs -m 2 -o /dev/null http://127.0.0.1:8080/readyz; do sleep 1; done; echo ready
+ready
+$ curl -sS -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/
+{"greeting": "Hi", "count": 5, "hostname": "02188082260e", "storage": "redis"} -> HTTP 200
+$ curl -sS -X POST -w ' -> HTTP %{http_code}\n' http://127.0.0.1:8080/increment
+{"greeting": "Hi", "count": 6, "hostname": "02188082260e", "storage": "redis"} -> HTTP 200
